@@ -31,6 +31,7 @@
 
 
 
+	opt	-Wno-rdlow
 	output	"driver.bin"
 
 ;-----------------------------------------------------------------------------
@@ -140,7 +141,11 @@ DRV_START:
 ;This is a 2 byte buffer to store the address of code to be executed.
 ;It is used by some of the kernel page 0 routines.
 
-CODE_ADD:	equ	0F84Ch
+;v2.1.0 beta 2 or later (0F1D0h)
+CODE_ADD:	equ	0F1D0h
+
+;before v2.1.0 beta 1 (0F84Ch)
+;CODE_ADD:	equ	0F84Ch
 
 
 ;-----------------------------------------------------------------------------
@@ -309,6 +314,8 @@ DRV_NAME:
 	jp	DEV_INFO
 	jp	DEV_STATUS
 	jp	LUN_INFO
+	jp	DEV_FORMAT
+	jp	DEV_CMD
 
 
 ;=====
@@ -953,6 +960,74 @@ LUN_INFO:
 ;	xor	a		; informar que dados foram preenchidos
 	ret
 
+;-----------------------------------------------------------------------------
+;
+; Physical format a device
+;
+;Input:   A = Device index, 1 to 7
+;         B = Logical unit number, 1 to 7
+;         C = Format choice, 0 to return choice string
+;Output:
+;        When C=0 at input:
+;        A = 0: Ok, address of choice string returned
+;            _IFORM: Invalid device or logical unit number,
+;                    or device not formattable
+;        HL = Address of format choice string (in bank 0 or 3),
+;             only if A=0 returned.
+;             Zero, if only one choice is available.
+;
+;        When C<>0 at input:
+;        A = 0: Ok, device formatted
+;            Other: error code, same as DEV_RW plus:
+;            _IPARM: Invalid format choice
+;            _IFORM: Invalid device or logical unit number,
+;                    or device not formattable
+;        B = Media ID if the device is a floppy disk, zero otherwise
+;            (only if A=0 is returned)
+;
+; Media IDs are:
+; F0h: 3.5" Double Sided, 80 tracks per side, 18 sectors per track (1.44MB)
+; F8h: 3.5" Single sided, 80 tracks per side, 9 sectors per track (360K)
+; F9h: 3.5" Double sided, 80 tracks per side, 9 sectors per track (720K)
+; FAh: 5.25" Single sided, 80 tracks per side, 8 sectors per track (320K)
+; FBh: 3.5" Double sided, 80 tracks per side, 8 sectors per track (640K)
+; FCh: 5.25" Single sided, 40 tracks per side, 9 sectors per track (180K)
+; FDh: 5.25" Double sided, 40 tracks per side, 9 sectors per track (360K)
+; FEh: 5.25" Single sided, 40 tracks per side, 8 sectors per track (160K)
+; FFh: 5.25" Double sided, 40 tracks per side, 8 sectors per track (320K)
+
+
+DEV_FORMAT:
+	ld	a, EIFORM
+	ret
+
+;-----------------------------------------------------------------------------
+;
+; Execute direct command on a device
+;
+;Input:    A = Device number, 1 to 7
+;          B = Logical unit number, 1 to 7 (if applicable)
+;          HL = Address of input buffer
+;          DE = Address of output buffer, 0 if not necessary
+;Output:   Output buffer appropriately filled (if applicable)
+;          A = Error code:
+;              0: Ok
+;              1: Invalid device number or logical unit number,
+;                 or device not ready
+;              2: Invalid or unknown command
+;              3: Insufficient output buffer space
+;              4-15: Reserved
+;              16-255: Device specific error codes
+;
+; The first two bytes of the input and output buffers must contain the size
+; of the buffer, not incuding the size bytes themselves.
+; For example, if 16 bytes are needed for a buffer, then 18 bytes must
+; be allocated, and the first two bytes of the buffer must be 16, 0.
+
+
+DEV_CMD:
+	ld	a, 2
+	ret
 ;=====
 ;=====  END of DEVICE-BASED specific routines
 ;=====
