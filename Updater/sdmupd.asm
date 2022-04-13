@@ -1,9 +1,9 @@
-; Projeto MSX SD Mapper
+Ôªø; Projeto MSX SD Mapper
 
 ; Copyright (c) 2014
 ; Fabio Belavenuto
 ;
-; Baseado no cÛdigo FL2 vers„o 2.2 de 29-12-2002  (c) Ramones 2002
+; Baseado no c√≥digo FL2 vers√£o 2.2 de 29-12-2002  (c) Ramones 2002
 ;
 ;
 ; This documentation describes Open Hardware and is licensed under the CERN OHL v. 1.1.
@@ -57,6 +57,11 @@ init:
 	jp		nz, eraseFlash				; yes, jump to erase it
 
 	call	checkFile					; Checks if file-argument exists and your size
+
+	ld		a, (options)
+	bit		2, a
+	jp		nz, selfUpdating
+
 	call	eraseFlash					; Erase flash.
 	call	loadFile 					; Load file in flash
 
@@ -264,8 +269,9 @@ checkFileName:
 ; --------------------------------------
 ; checkOptions
 ; OPTIONS :
-;			0 - erase flash only	/e
-;			1 - show list of chips	/l
+;			bit 0 - erase flash only	/e
+;			bit 1 - show list of chips	/l
+;			bit 2 - self updating(mapper EXTBIO required)	/r
 ;
 ; ---------------------------------------
 checkOptions:
@@ -299,6 +305,9 @@ checkOptions:
 	jr		z, .achado
 	sla		c
 	cp		'l'
+	jr		z, .achado
+	sla		c
+	cp		'm'
 	jr		z, .achado
 	ret
 .achado:
@@ -411,6 +420,9 @@ load16K:
 	ld		a, (RAMAD2)
 	ld		h, $80
 	call	ENASLT						; mem in page 2
+
+setfUpdatingMapperLoad16K:
+
 	ei
 	ld		de, $8000					; buffer = $8000
 	ld		hl, $4000					; length = $4000 (16K)
@@ -454,7 +466,7 @@ fillName:
 	jr		z, .p1						; 0 dec
 	cp		':'                     	; end
 	jr		z, .p2
-	cp		'\\'						; params
+	cp		low '\\'					; params
 	jr		z, .p2
 .p1:
 	dec		hl
@@ -613,6 +625,7 @@ writeFlash:
 	ld		h, $80
 	call	ENASLT						; mem to page 2 (DOS1)
 
+selfUpdatingWriteFlash:
 	ld		a, (flashslt)
 	ld		h, $40
 	call	ENASLT						; flash to page 1
@@ -819,7 +832,24 @@ exit:
 ; --------------------
 print:
 	ld		c, _STROUT
-	jp		callBdos
+	bit		0, c
+	jp		nz, callBdos
+
+	ld		a, (EXPTBL)
+	ld		(.slt), a
+
+.lp:
+	ld		a, (de)
+	inc		de
+	cp		'$'
+	ret		z
+
+	rst		30h
+.slt:
+	db		0
+	dw		CHPUT
+
+	jr		.lp
 
 ; ----------------
 ; makeFCB
@@ -1040,6 +1070,302 @@ flashIdent:
 	pop		hl
 	ret
 
+selfUpdating:
+
+	call	selfUpdatingSetupMapper
+	call	selfUpdatingLoadFile
+
+	di
+
+	ld		a, $C9
+	ld		(H.TIMI),a
+	ld		(H.KEYI),a
+
+	xor		a
+	ld		(print + 1), a
+
+	call	eraseFlash
+
+	call	selfUpdatingProgramFlash
+
+	jp		selfUpdatingResetSystem
+
+selfUpdatingSetupMapper:
+
+	ld		a, (HOKVLD)
+	rra
+	jr		nc, selfUpdatingErroMapper
+
+	ld		hl, EXTBIO
+	ld		a, (hl)
+	cp		$C9
+	jr		z, selfUpdatingErroMapper
+
+	xor		a
+	ld		de, $0401
+	call	EXTBIO
+
+	or		a
+	jr		z, selfUpdatingErroMapper
+
+	ld		(setfUpdatingMapperMainSlot), a
+	;ld		b, a
+
+	and		$8F
+	or		$20
+	ld		(setfUpdatingMapperMainSlotWithStrategy), a
+
+	xor		a
+	ld		de, $0402
+	call	EXTBIO
+
+	ld		a, $C3	;jp xxxx
+	ld		(setfUpdatingMapperALL_SEG), a
+	ld		(setfUpdatingMapperJumpTable), hl
+
+	ld		hl, setfUpdatingMapperPUT_P2
+	ld		e, $24
+	call	setfUpdatingMapperResolveJumpTable
+
+	ld		hl, setfUpdatingMapperGET_P2
+	ld		e, $27
+	call	setfUpdatingMapperResolveJumpTable
+
+	ld		b, 8						; 8 blocos de 16K = 128K
+	ld		hl, setfUpdatingMapperImageBufffer
+
+.nextBlock:
+
+	push	bc
+
+	ld		a, (setfUpdatingMapperMainSlotWithStrategy)
+	ld		b, a
+	xor		a
+	call	setfUpdatingMapperALL_SEG
+	jr		c, selfUpdatingErroMapper
+
+	ld		(hl), b
+	inc		hl
+
+	ld		(hl), a
+	inc		hl
+
+	pop		bc
+
+	djnz	.nextBlock
+
+	ret
+
+selfUpdatingErroMapper:
+	ld		de, selfUpdatingStrErroMapper
+	jp		printErro
+
+setfUpdatingMapperResolveJumpTable:
+	ld		d, $C3	;jp xxxx
+	ld		(hl), d
+	inc		hl
+
+	push	hl
+
+	ld		hl, (setfUpdatingMapperJumpTable)
+	ld		d, 0
+	add		hl, de
+	ex		de, hl
+
+	pop		hl
+
+	ld		(hl), e
+	inc		hl
+	ld		(hl), d
+	ret
+
+selfUpdatingLoadFile:
+
+	ld		de, strGravando
+	call	print						; Show Write Text
+
+	call	setfUpdatingMapperGET_P2
+	ld		(setfUpdatingMapperSavedP2), a
+
+	ld		b, 8						; 8 blocos de 16K = 128K
+	ld		hl, setfUpdatingMapperImageBufffer
+
+.loop:
+	ld		a, (hl)
+	inc		hl
+
+	push	bc
+	push	hl
+
+	ld		h, $80
+	call	ENASLT
+
+	pop		hl
+	pop		bc
+
+	ld		a, (hl)
+	inc		hl
+	
+	push	hl
+
+	call	setfUpdatingMapperPUT_P2
+
+	push	bc
+
+	call	fillPage					; fill page 2 (read buffer) with $FF
+	call	setfUpdatingMapperLoad16K	; and load one 16 K page to buffer
+
+	ei
+
+	ld		de, strPonto
+	call	print						; show '*' for 16 K page loaded
+
+	pop		bc
+
+	pop		hl
+
+	djnz	.loop						; next loop
+
+	ld		a, (setfUpdatingMapperSavedP2)
+	call	setfUpdatingMapperPUT_P2
+
+	ld		a, (RAMAD2)
+	ld		h, $80
+	call	ENASLT
+
+	call	closeFile					; end for load. close File.
+
+	ld		de, strCrLf
+	jp		print
+
+selfUpdatingProgramFlash:
+
+	ld		de, selfUpdatingStrProgramming
+	call	print						; Show Write Text
+
+	xor		a
+	ld		(actualpage), a				; and inc page to next loop
+
+	call	setfUpdatingMapperGET_P2
+	ld		(setfUpdatingMapperSavedP2), a
+
+	ld		b, 8						; 8 blocos de 16K = 128K
+	ld		hl, setfUpdatingMapperImageBufffer
+
+.loop:
+
+	ld		a, (hl)
+	inc		hl
+
+	push	bc
+	push	hl
+
+	ld		h, $80
+	call	ENASLT
+	di
+
+	pop		hl
+	pop		bc
+
+	ld		a, (hl)
+	inc		hl
+	
+	push	hl
+
+	call	setfUpdatingMapperPUT_P2
+
+	push	bc
+	call	selfUpdatingWriteFlash		; now write this 16 K to FLASH
+	di
+
+	ld		de, strErroAoGravarFlash
+	jp		nz, printErro				; oops! Error writing bytes. Show Error and exit.
+
+	ld		de, strPonto
+	call	print						; show '*' for 16 K page loaded
+	pop		bc
+	ld		a, (actualpage)
+	inc		a
+	ld		(actualpage), a				; and inc page to next loop
+
+	pop		hl
+
+	djnz	.loop						; next loop
+
+	ld		a, (setfUpdatingMapperSavedP2)
+	call	setfUpdatingMapperPUT_P2
+
+	ld		a, (RAMAD2)
+	ld		h, $80
+	call	ENASLT
+
+	ld		de, strCrLf
+	call	print
+
+	ld		de, strUpdateCompleto		; and print Success Text.
+	jp		print
+
+
+selfUpdatingResetSystem:
+
+RDRES	equ	$17A
+WRRES	equ	$17D
+
+	di
+
+	ld		hl, .codepage3
+	ld		de, $C000
+	ld		bc, .codepage3end - .codepage3
+	ldir
+	jp		$C000
+
+.codepage3:
+
+	ld		h, $00
+	ld		a, (EXPTBL)
+	call	ENASLT
+
+	di
+
+	ld		a, (BASVER)
+	sub		$01
+	jr		z, .msx2
+	jr		c, .msx1
+
+	call	RDRES
+	or		$80
+	call	WRRES
+	jr		.jp0
+
+.msx1:
+	xor		a
+	;out		($FF), a
+	inc		a
+	out		($FE), a
+	inc		a
+	out		($FD), a
+	inc		a
+	out		($FC), a
+
+.msx2:
+	xor		a
+	out		($F5), a
+
+.jp0:
+	jp		$0000
+
+.codepage3end:
+
+selfUpdatingStrErroMapper:
+	.db		13, 10
+	.db		"ERROR: No mapper found", 13, 10
+	.db		'$'
+
+selfUpdatingStrProgramming:
+	.db	 	13, 10
+	.db		"Programming Flash "
+	.db 	'$'
+
 ; *** TEXTS ***
 
 strTitulo:
@@ -1062,6 +1388,7 @@ strHelp:
 	.db		"     /h : Show this help.", 13, 10
 	.db		"     /l : Show list of supported chips.", 13, 10
 	.db		"     /e : Only erase flash and exit.", 13, 10
+	.db		"     /m : Self updating.(mapper EXIBIO required)", 13, 10
 	.db		'$'
 
 strProcuraFlash:
@@ -1119,7 +1446,7 @@ strPonto:
 	.db		'*$'
 
 strGravando:
-	.dw 	13, 10
+	.db	 	13, 10
 	.db		"Loading "
 	.db 	'$'
 
@@ -1258,6 +1585,26 @@ fileNameDOS1:	.db "        "			; DOS1 fileName for DOS1 Code
 filenDOS1Ext:	.db	"   "
 				.ds	4
 
+setfUpdatingMapperALL_SEG:
+			.ds	1
+setfUpdatingMapperJumpTable:
+			.ds	2
+setfUpdatingMapperPUT_P2:
+			.ds	3
+setfUpdatingMapperGET_P2:
+			.ds	3
+
+setfUpdatingMapperImageBufffer:
+			.ds	2 * 8
+
+setfUpdatingMapperSavedP2:
+			.ds	1
+
+setfUpdatingMapperMainSlot:
+			.ds	1
+setfUpdatingMapperMainSlotWithStrategy:
+			.ds	1
+
 ; *** FCB DOS 1 ***
 FCB:
 unidad:		.db	0
@@ -1270,3 +1617,5 @@ sizefile:	.ds	4
 sizeread:
 			.ds	4
 			.db	0
+
+
